@@ -30,6 +30,7 @@
 #include <linux/fb.h>
 #include "qdMetaData.h"
 #include <overlayUtils.h>
+#include <cutils/sockets.h>
 
 #define ALIGN_TO(x, align)     (((x) + ((align)-1)) & ~((align)-1))
 #define LIKELY( exp )       (__builtin_expect( (exp) != 0, true  ))
@@ -37,6 +38,7 @@
 #define MAX_NUM_APP_LAYERS 32
 #define MAX_DISPLAY_DIM 2048
 
+#define DAEMON_SOCKET "pps"
 //Fwrd decls
 struct hwc_context_t;
 
@@ -83,6 +85,8 @@ struct DisplayAttributes {
     // To trigger padding round to clean up mdp
     // pipes
     bool isConfiguring;
+    // External Display is in MDP Downscale mode indicator
+    bool mDownScaleMode;
 };
 
 struct ListStats {
@@ -109,6 +113,14 @@ struct LayerProp {
 struct VsyncState {
     bool enable;
     bool fakevsync;
+};
+
+struct CablProp {
+    bool enabled;
+    bool start;
+    bool videoOnly;
+    //daemon_socket for connection to pp-daemon
+    int daemon_socket;
 };
 
 // LayerProp::flag values
@@ -171,6 +183,8 @@ int getBlending(int blending);
 //Helper function to dump logs
 void dumpsys_log(android::String8& buf, const char* fmt, ...);
 
+int getExtOrientation(hwc_context_t* ctx);
+
 /* Calculates the destination position based on the action safe rectangle */
 void getActionSafePosition(hwc_context_t *ctx, int dpy, hwc_rect_t& dst);
 
@@ -182,8 +196,19 @@ void getAspectRatioPosition(hwc_context_t* ctx, int dpy, int extOrientation,
 
 bool isPrimaryPortrait(hwc_context_t *ctx);
 
+bool isOrientationPortrait(hwc_context_t *ctx);
+
 void calcExtDisplayPosition(hwc_context_t *ctx,
-                               int dpy, hwc_rect_t& displayFrame);
+                               private_handle_t *hnd,
+                               int dpy,
+                               hwc_rect_t& sourceCrop,
+                               hwc_rect_t& displayFrame,
+                               int& transform,
+                               ovutils::eTransform& orient);
+
+// Returns the orientation that needs to be set on external for
+// BufferMirrirMode(Sidesync)
+int getMirrorModeOrientation(hwc_context_t *ctx);
 
 //Close acquireFenceFds of all layers of incoming list
 void closeAcquireFds(hwc_display_contents_1_t* list);
@@ -259,6 +284,26 @@ static inline bool isExtCC(const private_handle_t* hnd) {
     return (hnd && (hnd->flags & private_handle_t::PRIV_FLAGS_EXTERNAL_CC));
 }
 
+static inline int getWidth(const private_handle_t* hnd) {
+    if(isYuvBuffer(hnd)) {
+        MetaData_t *metadata = (MetaData_t *)hnd->base_metadata;
+        if(metadata && metadata->operation & UPDATE_BUFFER_GEOMETRY) {
+            return metadata->bufferDim.sliceWidth;
+        }
+    }
+    return hnd->width;
+}
+
+static inline int getHeight(const private_handle_t* hnd) {
+    if(isYuvBuffer(hnd)) {
+        MetaData_t *metadata = (MetaData_t *)hnd->base_metadata;
+        if(metadata && metadata->operation & UPDATE_BUFFER_GEOMETRY) {
+            return metadata->bufferDim.sliceHeight;
+        }
+    }
+    return hnd->height;
+}
+
 template<typename T> inline T max(T a, T b) { return (a > b) ? a : b; }
 template<typename T> inline T min(T a, T b) { return (a < b) ? a : b; }
 
@@ -290,7 +335,7 @@ inline void swap(T& a, T& b) {
     a = b;
     b = tmp;
 }
-
+int getSocIdFromSystem();
 }; //qhwc namespace
 
 // -----------------------------------------------------------------------------
@@ -319,6 +364,7 @@ struct hwc_context_t {
     qhwc::ListStats listStats[HWC_NUM_DISPLAY_TYPES];
     qhwc::LayerProp *layerProp[HWC_NUM_DISPLAY_TYPES];
     qhwc::MDPComp *mMDPComp[HWC_NUM_DISPLAY_TYPES];
+    qhwc::CablProp mCablProp;
 
     // No animation on External display feature
     // Notifies hwcomposer about the device orientation before animation.
@@ -343,6 +389,11 @@ struct hwc_context_t {
     mutable Locker mDrawLock;
     // External Orientation
     int mExtOrientation;
+    //Used for SideSync feature
+    //which overrides the mExtOrientation
+    bool mBufferMirrorMode;
+    //used for enabling C2D Feature only for 8960 Non Pro Device
+    int mSocId;
     qhwc::LayerRotMap *mLayerRotMap[HWC_NUM_DISPLAY_TYPES];
 };
 
@@ -354,6 +405,11 @@ static inline bool isSkipPresent (hwc_context_t *ctx, int dpy) {
 static inline bool isYuvPresent (hwc_context_t *ctx, int dpy) {
     return  ctx->listStats[dpy].yuvCount;
 }
+
+static inline bool has90Transform(hwc_layer_1_t *layer) {
+    return (layer->transform & HWC_TRANSFORM_ROT_90);
+}
+
 };
 
 #endif //HWC_UTILS_H
