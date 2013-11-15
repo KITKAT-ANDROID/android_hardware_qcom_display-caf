@@ -41,8 +41,6 @@ __BEGIN_DECLS
 
 /* supported pixel-formats. these must be compatible with
  * graphics/PixelFormat.java, ui/PixelFormat.h, pixelflinger/format.h
- *    COPYBIT_FORMAT_RGBA_5551    = HAL_PIXEL_FORMAT_RGBA_5551,
- *   COPYBIT_FORMAT_RGBA_4444    = HAL_PIXEL_FORMAT_RGBA_4444,
  */
 enum {
     COPYBIT_FORMAT_RGBA_8888    = HAL_PIXEL_FORMAT_RGBA_8888,
